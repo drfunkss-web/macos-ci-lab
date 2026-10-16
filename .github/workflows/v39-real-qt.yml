@@ -1,0 +1,116 @@
+name: V3.9 real Qt smoke test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-real-qt-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  real-qt:
+    name: Real PySide6 macOS verification
+
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+
+    runs-on: macos-15
+    timeout-minutes: 12
+
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      JARVIS_DISABLE_LIVE_NVIDIA: '1'
+      NVIDIA_API_KEY: ''
+      OPENAI_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Install real PySide6 and pytest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if python -m pip install --no-input \
+            'pytest==9.1.1' \
+            'PySide6==6.9.2' \
+            > "$RUNNER_TEMP/qt-install.log" 2>&1
+          then
+            echo "QT_DEPENDENCIES_READY"
+          else
+            echo "QT_DEPENDENCY_INSTALL_FAILED"
+            exit 1
+          fi
+
+          python -c "from PySide6.QtWidgets import QApplication; print('REAL_QT_AVAILABLE')"
+
+      - name: Checkout private V3.9 source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 35af7b8ca37bd7a85c699931edde3c66e99f67ca
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+
+      - name: Verify exact source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C source rev-parse HEAD)" = \
+            "35af7b8ca37bd7a85c699931edde3c66e99f67ca"
+
+          echo "QT_SOURCE_SHA_VERIFIED"
+
+      - name: Run real Qt smoke tests
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+
+        run: |
+          set -euo pipefail
+
+          export HOME="$RUNNER_TEMP"
+
+          if python -m pytest \
+            tests/test_real_qt_smoke_v35.py \
+            -q --tb=no --disable-warnings \
+            -p no:cacheprovider \
+            > "$RUNNER_TEMP/qt-results.log" 2>&1
+          then
+            if grep -Eq '(^|[[:space:]])2 passed([[:space:]]|$)' \
+              "$RUNNER_TEMP/qt-results.log"
+            then
+              echo "V39_REAL_QT_TWO_TESTS_PASSED"
+            else
+              echo "QT_TEST_COUNT_NOT_VERIFIED"
+              exit 1
+            fi
+          else
+            echo "V39_REAL_QT_FAILED"
+            exit 1
+          fi
