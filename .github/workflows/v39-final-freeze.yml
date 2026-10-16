@@ -1,8 +1,6 @@
 name: V3.9 final source freeze verification
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
