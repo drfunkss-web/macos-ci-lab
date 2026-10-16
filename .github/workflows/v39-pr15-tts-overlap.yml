@@ -1,0 +1,188 @@
+name: V3.9 PR15 retained audio verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/v39-pr15-tts-overlap.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-pr15-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: PR15 capture metadata regression and Qt
+    if: >-
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        github.event.head_commit.message == 'ci: verify PR15 once 42d2c8e4-20261016')) &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      JARVIS_DISABLE_LIVE_NVIDIA: '1'
+      QT_QPA_PLATFORM: offscreen
+      NVIDIA_API_KEY: ''
+      OPENAI_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Prepare dependencies and numeric reporting before private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python -m pip install --no-input \
+            'pytest==9.1.1' 'openai==2.54.0' 'numpy==1.26.4' \
+            'requests==2.34.2' 'PyYAML==6.0.3' \
+            'opencv-contrib-python==4.11.0.86' 'mediapipe==0.10.21' \
+            'ddgs==9.16.0' 'sounddevice==0.5.6' \
+            'webrtcvad-wheels==2.0.14.post1' 'beautifulsoup4==4.15.0' \
+            'PyAutoGUI==0.9.54' > "$RUNNER_TEMP/pr15-install.log" 2>&1
+          then
+            echo 'PR15_DEPENDENCIES_READY'
+          else
+            echo 'PR15_DEPENDENCIES_FAILED'
+            exit 1
+          fi
+          python -m venv "$RUNNER_TEMP/pr15-qt-venv"
+          if "$RUNNER_TEMP/pr15-qt-venv/bin/python" -m pip install --no-input \
+            'pytest==9.1.1' 'PySide6==6.9.2' \
+            > "$RUNNER_TEMP/pr15-qt-install.log" 2>&1
+          then
+            echo 'PR15_QT_DEPENDENCIES_READY'
+          else
+            echo 'PR15_QT_DEPENDENCIES_FAILED'
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/pr15-summary.py" <<'PY'
+          import sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          try:
+              label, filename, expected = sys.argv[1:]
+              if label not in {'FOCUSED', 'REGRESSION', 'QT'}:
+                  raise ValueError()
+              path = Path(filename)
+              if path.is_symlink() or not 0 < path.stat().st_size < 10000000:
+                  raise ValueError()
+              root = ET.fromstring(path.read_bytes())
+              suites = [root] if root.tag == 'testsuite' else list(root.findall('testsuite'))
+              if not suites:
+                  raise ValueError()
+              counts = {k: sum(int(s.attrib.get(k, '0')) for s in suites)
+                        for k in ('tests', 'failures', 'errors', 'skipped')}
+              if any(v < 0 for v in counts.values()):
+                  raise ValueError()
+              passed = counts['tests'] - counts['failures'] - counts['errors'] - counts['skipped']
+              if passed < 0:
+                  raise ValueError()
+              print(f'PR15_{label}_COUNTS passed={passed} skipped={counts["skipped"]} '
+                    f'failures={counts["failures"]} errors={counts["errors"]}')
+              valid = passed > 0 and counts['failures'] == 0 and counts['errors'] == 0
+              if int(expected) >= 0:
+                  valid = valid and passed == int(expected) and counts['skipped'] == 0
+              sys.exit(0 if valid else 1)
+          except Exception:
+              print('PR15_SUMMARY_UNAVAILABLE')
+              sys.exit(1)
+          PY
+          mkdir -p "$RUNNER_TEMP/pr15-home"
+
+      - name: Checkout exact private PR15 source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 42d2c8e4f8502d5f31189700ef243ecb20c795e3
+          path: source
+          fetch-depth: 2
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+
+      - name: Verify source SHA parent and clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-list --parents -n 1 HEAD)" = \
+            '42d2c8e4f8502d5f31189700ef243ecb20c795e3 6b4b3459a7c7d78dabcfecf2dd7811f12031c8d6'
+          test -z "$(git -C source status --porcelain)"
+          echo 'PR15_SOURCE_SHA_VERIFIED'
+
+      - name: Run 34 synthetic capture and routing cases
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/pr15-home"
+          code=0
+          python -m pytest tests/test_tts_capture_overlap_v39.py \
+            -q --tb=no --disable-warnings -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/pr15-focused.xml" \
+            > "$RUNNER_TEMP/pr15-focused.log" 2>&1 || code=$?
+          python "$RUNNER_TEMP/pr15-summary.py" FOCUSED "$RUNNER_TEMP/pr15-focused.xml" 34
+          test "$code" -eq 0
+          echo 'PR15_FOCUSED_TESTS_PASSED'
+
+      - name: Run complete offline regression
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/pr15-home"
+          code=0
+          python -m pytest tests -q --tb=no --disable-warnings -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/pr15-regression.xml" \
+            > "$RUNNER_TEMP/pr15-regression.log" 2>&1 || code=$?
+          python "$RUNNER_TEMP/pr15-summary.py" REGRESSION "$RUNNER_TEMP/pr15-regression.xml" -1
+          test "$code" -eq 0
+          echo 'PR15_FULL_REGRESSION_PASSED'
+
+      - name: Verify two real Qt tests in separate interpreter
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/pr15-home"
+          code=0
+          "$RUNNER_TEMP/pr15-qt-venv/bin/python" -m pytest tests/test_real_qt_smoke_v35.py \
+            -q --tb=no --disable-warnings -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/pr15-qt.xml" \
+            > "$RUNNER_TEMP/pr15-qt.log" 2>&1 || code=$?
+          python "$RUNNER_TEMP/pr15-summary.py" QT "$RUNNER_TEMP/pr15-qt.xml" 2
+          test "$code" -eq 0
+          echo 'PR15_REAL_QT_TWO_TESTS_PASSED'
+          echo 'PR15_VERIFICATION_PASSED'
