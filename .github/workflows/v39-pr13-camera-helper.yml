@@ -1,8 +1,6 @@
 name: V3.9 PR20 current-main camera helper verification
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -17,7 +15,7 @@ jobs:
     name: PR20 camera helper and offline regression
 
     if: >-
-      (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
