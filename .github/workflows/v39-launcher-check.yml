@@ -1,0 +1,159 @@
+name: V3.9 manual macOS launcher check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-launcher-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  launcher:
+    name: macOS launcher verification
+
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+
+    runs-on: macos-15
+    timeout-minutes: 12
+
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      JARVIS_DISABLE_LIVE_NVIDIA: '1'
+      NVIDIA_API_KEY: ''
+      OPENAI_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Checkout pinned private source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 35af7b8ca37bd7a85c699931edde3c66e99f67ca
+          path: source
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+
+      - name: Verify SHA and prepare disposable local branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C source rev-parse HEAD)" = \
+            "35af7b8ca37bd7a85c699931edde3c66e99f67ca"
+
+          test -z "$(git -C source status --porcelain)"
+
+          git -C source switch -c ci-launcher-v39 > /dev/null
+
+          test "$(git -C source branch --show-current)" = \
+            "ci-launcher-v39"
+
+          echo "LAUNCHER_SOURCE_SHA_VERIFIED"
+
+      - name: Build and verify temporary macOS launcher
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+
+        run: |
+          set -euo pipefail
+
+          BASE="$RUNNER_TEMP/launcher-ci"
+          APP="$BASE/Review.app"
+          SUPPORT="$BASE/support"
+          VENV="$BASE/venv"
+
+          mkdir -p "$BASE/home"
+          export HOME="$BASE/home"
+
+          python -m venv "$VENV"
+
+          if python source/tools/install_production_macos.py \
+            --python "$VENV/bin/python" \
+            --destination "$APP" \
+            --support-dir "$SUPPORT" \
+            --skip-requirements-check \
+            > "$BASE/build.log" 2>&1
+          then
+            echo "LAUNCHER_PACKAGE_CREATED"
+          else
+            echo "LAUNCHER_PACKAGE_FAILED"
+            exit 1
+          fi
+
+          if /usr/bin/codesign --verify "$APP" \
+            > "$BASE/codesign.log" 2>&1
+          then
+            echo "LAUNCHER_CODESIGN_VERIFIED"
+          else
+            echo "LAUNCHER_CODESIGN_FAILED"
+            exit 1
+          fi
+
+          if /usr/bin/plutil -lint \
+            "$APP/Contents/Info.plist" \
+            > "$BASE/plist.log" 2>&1
+          then
+            echo "LAUNCHER_PLIST_VERIFIED"
+          else
+            echo "LAUNCHER_PLIST_FAILED"
+            exit 1
+          fi
+
+          python - \
+            "$APP/Contents/Resources/jarvis-release.json" \
+            "$SUPPORT" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(
+              Path(sys.argv[1]).read_text(encoding="utf-8")
+          )
+
+          expected_sha = (
+              "35af7b8ca37bd7a85c699931edde3c66e99f67ca"
+          )
+
+          assert manifest["git_sha"] == expected_sha
+          assert manifest["version"] == "3.8.0"
+          assert manifest["standalone"] is False
+          assert manifest["requires_local_checkout"] is True
+
+          launchers = (
+              Path(sys.argv[2])
+              / expected_sha[:12]
+              / "launchers"
+          )
+
+          for mode in (
+              "menu", "desktop", "full",
+              "voice", "offline", "dev"
+          ):
+              assert (launchers / f"{mode}.command").is_file()
+
+          print("LAUNCHER_MANIFEST_VERIFIED")
+          PY
+
+          echo "V39_LAUNCHER_CHECK_PASSED"
