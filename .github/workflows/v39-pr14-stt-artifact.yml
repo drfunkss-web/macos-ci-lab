@@ -2,9 +2,6 @@ name: V3.9 PR14 isolated STT artifact verification
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/v39-pr14-stt-artifact.yml]
 
 permissions:
   contents: read
@@ -18,9 +15,7 @@ jobs:
     name: PR14 STT filtering and offline regression
 
     if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.head_commit.message == 'ci: run pinned PR14 verification once 20261016-2c5d0a08')) &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
