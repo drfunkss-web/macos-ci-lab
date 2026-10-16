@@ -2,9 +2,6 @@ name: V3.9 PR15 capture overlap verification
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/v39-pr15-capture-overlap.yml]
 
 permissions:
   contents: read
@@ -29,9 +26,7 @@ jobs:
   verify:
     name: PR15 focused and full offline regression
     if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.head_commit.message == 'ci: verify PR15 once 42d2c8e4-20261016a')) &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
@@ -133,9 +128,7 @@ jobs:
     name: PR15 real Qt in clean macOS job
     needs: verify
     if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' &&
-        github.event.head_commit.message == 'ci: verify PR15 once 42d2c8e4-20261016a')) &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
