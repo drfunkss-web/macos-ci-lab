@@ -1,0 +1,217 @@
+name: V3.9 PR16 TTS stop race verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [verify/pr16-stop-race-d0829f9]
+    paths: [.github/workflows/v39-pr16-tts-stop-race.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-pr16-stop-race
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  JARVIS_DISABLE_LIVE_NVIDIA: '1'
+  NVIDIA_API_KEY: ''
+  OPENAI_API_KEY: ''
+  ANTHROPIC_API_KEY: ''
+  HF_HUB_OFFLINE: '1'
+  TRANSFORMERS_OFFLINE: '1'
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  verify:
+    name: PR16 focused and full offline regression
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/verify/pr16-stop-race-d0829f9' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install dependencies before private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python -m pip install --no-input \
+            'pytest==9.1.1' 'openai==2.54.0' 'numpy==1.26.4' \
+            'requests==2.34.2' 'PyYAML==6.0.3' \
+            'opencv-contrib-python==4.11.0.86' 'mediapipe==0.10.21' \
+            'ddgs==9.16.0' 'sounddevice==0.5.6' \
+            'webrtcvad-wheels==2.0.14.post1' 'beautifulsoup4==4.15.0' \
+            'PyAutoGUI==0.9.54' > "$RUNNER_TEMP/pr16-dependencies.log" 2>&1
+          then
+            echo 'PR16_DEPENDENCIES_READY'
+          else
+            echo 'PR16_DEPENDENCIES_FAILED_DETAILS_WITHHELD'
+            exit 1
+          fi
+      - name: Checkout exact private PR16 commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: d0829f9fa968fb21a1046841c9aa6b475d30d0a7
+          path: source
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+      - name: Verify immutable source and reviewed blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = 'd0829f9fa968fb21a1046841c9aa6b475d30d0a7'
+          test "$(git -C source rev-parse HEAD:jarvis/voice/tts_control.py)" = '707ed950cde2ecb12af5e3a856bf8abf95857c24'
+          test "$(git -C source rev-parse HEAD:tests/test_tts_stop_race_v39.py)" = 'ab331d508271ca8eaf46827c72dfdb28307e51d9'
+          test -z "$(git -C source status --porcelain)"
+          echo 'PR16_SOURCE_SHA_AND_BLOBS_VERIFIED'
+      - name: Run focused and full regression with numeric summaries only
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/pr16-test-home"
+          mkdir -p "$HOME"
+          for PROFILE in focused regression; do
+            if [ "$PROFILE" = focused ]; then
+              TARGETS=(tests/test_tts_stop_race_v39.py tests/test_tts_engine_reliability.py tests/test_tts_capture_overlap_v39.py)
+            else
+              TARGETS=(tests)
+            fi
+            REPORT="$RUNNER_TEMP/pr16-$PROFILE.xml"
+            if python -m pytest "${TARGETS[@]}" -q --tb=no --disable-warnings \
+              -p no:cacheprovider --junitxml="$REPORT" \
+              > "$RUNNER_TEMP/pr16-$PROFILE.log" 2>&1
+            then
+              python - "$REPORT" "$PROFILE" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          path, profile = Path(sys.argv[1]), sys.argv[2]
+          assert path.stat().st_size < 10_000_000
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == 'testsuite' else root.findall('testsuite')
+          counts = {key: sum(int(s.get(key, '0')) for s in suites)
+                    for key in ('tests', 'failures', 'errors', 'skipped')}
+          assert counts['failures'] == counts['errors'] == 0
+          counts['passed'] = counts['tests'] - counts['skipped']
+          if profile == 'focused':
+              assert counts['tests'] == counts['passed'] == 49
+          else:
+              assert counts['tests'] >= 1119 and counts['passed'] >= 1118
+              assert counts['skipped'] <= 1
+          print('PR16_' + profile.upper() + '_COUNTS ' +
+                ' '.join(key + '=' + str(value) for key, value in counts.items()))
+          PY
+              echo "PR16_${PROFILE}_PASSED"
+            else
+              echo "PR16_${PROFILE}_FAILED_DETAILS_WITHHELD"
+              exit 1
+            fi
+          done
+          echo 'PR16_REGRESSION_VERIFIED'
+
+  real-qt:
+    name: PR16 real Qt in clean macOS job
+    needs: verify
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/verify/pr16-stop-race-d0829f9' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install real Qt before private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python -m pip install --no-input 'pytest==9.1.1' 'PySide6==6.9.2' \
+            > "$RUNNER_TEMP/pr16-qt-install.log" 2>&1
+          then
+            echo 'PR16_QT_DEPENDENCIES_READY'
+          else
+            echo 'PR16_QT_INSTALL_FAILED_DETAILS_WITHHELD'
+            exit 1
+          fi
+          python -c 'from PySide6.QtWidgets import QApplication; print("PR16_REAL_QT_AVAILABLE")'
+      - name: Checkout exact private PR16 commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: d0829f9fa968fb21a1046841c9aa6b475d30d0a7
+          path: source
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+      - name: Verify immutable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = 'd0829f9fa968fb21a1046841c9aa6b475d30d0a7'
+          test -z "$(git -C source status --porcelain)"
+          echo 'PR16_QT_SOURCE_SHA_VERIFIED'
+      - name: Run two real Qt smoke tests without public private logs
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          export HOME="$RUNNER_TEMP/pr16-qt-home"
+          mkdir -p "$HOME"
+          if python -m pytest tests/test_real_qt_smoke_v35.py \
+            -q --tb=no --disable-warnings -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/pr16-qt.xml" \
+            > "$RUNNER_TEMP/pr16-qt.log" 2>&1
+          then
+            python - "$RUNNER_TEMP/pr16-qt.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          assert path.stat().st_size < 1_000_000
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == 'testsuite' else root.findall('testsuite')
+          counts = {key: sum(int(s.get(key, '0')) for s in suites)
+                    for key in ('tests', 'failures', 'errors', 'skipped')}
+          assert counts == {'tests': 2, 'failures': 0, 'errors': 0, 'skipped': 0}
+          print('PR16_REAL_QT_COUNTS tests=2 failures=0 errors=0 skipped=0 passed=2')
+          PY
+          else
+            echo 'PR16_REAL_QT_FAILED_DETAILS_WITHHELD'
+            exit 1
+          fi
+          echo 'PR16_VERIFICATION_PASSED'
