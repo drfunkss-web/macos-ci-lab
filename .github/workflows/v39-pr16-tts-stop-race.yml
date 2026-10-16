@@ -2,9 +2,6 @@ name: V3.9 PR16 TTS stop race verification
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/v39-pr16-tts-stop-race.yml]
 
 permissions:
   contents: read
@@ -29,8 +26,7 @@ jobs:
   verify:
     name: PR16 focused and full offline regression
     if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && github.event.head_commit.message == 'ci: verify PR16 once d0829f9f-20261016')) &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
@@ -133,8 +129,7 @@ jobs:
     name: PR16 real Qt in clean macOS job
     needs: verify
     if: >-
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && github.event.head_commit.message == 'ci: verify PR16 once d0829f9f-20261016')) &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
