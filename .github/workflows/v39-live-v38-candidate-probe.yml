@@ -1,8 +1,6 @@
 name: V3.9 live V3.8 candidate gate probe
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
