@@ -1,0 +1,56 @@
+name: V3.9 PR22 checkout v5 hosted preflight
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-pr22-checkout-v5-preflight
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: PR22 checkout v5 hosted preflight
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web'
+    runs-on: macos-15
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      NVIDIA_API_KEY: ''
+      OPENAI_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+    steps:
+      - name: Checkout exact private PR22 commit with checkout v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 6e18441ef350042cea78bac33bf07a0c93c35d61
+          path: source
+          fetch-depth: 2
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+
+      - name: Verify exact source and one-line workflow scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = '6e18441ef350042cea78bac33bf07a0c93c35d61'
+          test "$(git -C source rev-parse HEAD^)" = '46b478346b3bc88c9a51eeef146abdc3b0f76424'
+          test -z "$(git -C source status --porcelain)"
+          test "$(git -C source diff --name-only HEAD^ HEAD)" = '.github/workflows/jarvis-local-manual.yml'
+          test "$(git -C source diff --numstat HEAD^ HEAD)" = $'1\t1\t.github/workflows/jarvis-local-manual.yml'
+          grep -F "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5 (Node.js 24)" source/.github/workflows/jarvis-local-manual.yml
+          echo 'PR22_CHECKOUT_V5_HOSTED_PREFLIGHT_PASSED'
