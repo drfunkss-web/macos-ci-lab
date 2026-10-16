@@ -1,0 +1,232 @@
+name: V3.9 PR18 TTS wait failure verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/v39-pr18-tts-wait-failure.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-pr18-tts-wait-failure
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+  JARVIS_DISABLE_LIVE_NVIDIA: '1'
+  NVIDIA_API_KEY: ''
+  OPENAI_API_KEY: ''
+  ANTHROPIC_API_KEY: ''
+  HF_HUB_OFFLINE: '1'
+  TRANSFORMERS_OFFLINE: '1'
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  verify:
+    name: PR18 focused and full offline regression
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install dependencies before private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python -m pip install --no-input \
+            'pytest==9.1.1' 'openai==2.54.0' 'numpy==1.26.4' \
+            'requests==2.34.2' 'PyYAML==6.0.3' \
+            'opencv-contrib-python==4.11.0.86' 'mediapipe==0.10.21' \
+            'ddgs==9.16.0' 'sounddevice==0.5.6' \
+            'webrtcvad-wheels==2.0.14.post1' 'beautifulsoup4==4.15.0' \
+            'PyAutoGUI==0.9.54' > "$RUNNER_TEMP/pr18-dependencies.log" 2>&1
+          then
+            echo 'PR18_DEPENDENCIES_READY'
+          else
+            echo 'PR18_DEPENDENCIES_FAILED_DETAILS_WITHHELD'
+            exit 1
+          fi
+      - name: Checkout exact private PR18 commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 21c8196cbef1b5b581419942558d1af0985d0f6a
+          path: source
+          fetch-depth: 2
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+      - name: Verify immutable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = '21c8196cbef1b5b581419942558d1af0985d0f6a'
+          test -z "$(git -C source status --porcelain)"
+          echo 'PR18_SOURCE_SHA_VERIFIED'
+      - name: Run focused then full regression with numeric summaries only
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          # Demonstrate that the new tests detect the original state leak.
+          git show HEAD^:jarvis/voice/tts_control.py > jarvis/voice/tts_control.py
+          trap 'git checkout -- jarvis/voice/tts_control.py' EXIT
+          if python -m pytest tests/test_tts_wait_failure_v39.py -q --tb=no \
+            -p no:cacheprovider --junitxml="$RUNNER_TEMP/pr18-baseline.xml" \
+            > "$RUNNER_TEMP/pr18-baseline.log" 2>&1; then
+            echo 'PR18_BASELINE_UNEXPECTED_PASS'
+            exit 1
+          fi
+          python - "$RUNNER_TEMP/pr18-baseline.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == 'testsuite' else root.findall('testsuite')
+          counts = {key: sum(int(s.get(key, '0')) for s in suites)
+                    for key in ('tests', 'failures', 'errors', 'skipped')}
+          assert counts == {'tests': 2, 'failures': 2, 'errors': 0, 'skipped': 0}, counts
+          print('PR18_BASELINE_VERIFIED tests=2 failures=2 errors=0 skipped=0 passed=0')
+          PY
+          git checkout -- jarvis/voice/tts_control.py
+          trap - EXIT
+          for PROFILE in focused regression; do
+            if [ "$PROFILE" = focused ]; then
+              TARGETS=(tests/test_tts_wait_failure_v39.py tests/test_tts_launch_failure_v39.py tests/test_tts_stop_race_v39.py tests/test_tts_engine_reliability.py tests/test_tts_capture_overlap_v39.py)
+              EXPECTED=56
+            else
+              TARGETS=(tests)
+              EXPECTED=0
+            fi
+            REPORT="$RUNNER_TEMP/pr18-$PROFILE.xml"
+            if python -m pytest "${TARGETS[@]}" -q --tb=no --disable-warnings \
+              -p no:cacheprovider --junitxml="$REPORT" \
+              > "$RUNNER_TEMP/pr18-$PROFILE.log" 2>&1
+            then
+              python - "$REPORT" "$PROFILE" "$EXPECTED" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          path, profile, expected = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+          assert path.stat().st_size < 10_000_000
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == 'testsuite' else root.findall('testsuite')
+          counts = {key: sum(int(s.get(key, '0')) for s in suites)
+                    for key in ('tests', 'failures', 'errors', 'skipped')}
+          assert counts['tests'] > 0 and counts['failures'] == counts['errors'] == 0
+          assert expected == 0 or (counts['tests'] == expected and counts['skipped'] == 0)
+          counts['passed'] = counts['tests'] - counts['skipped']
+          print('PR18_' + profile.upper() + '_COUNTS ' +
+                ' '.join(key + '=' + str(value) for key, value in counts.items()))
+          PY
+              echo "PR18_${PROFILE}_PASSED"
+            else
+              echo "PR18_${PROFILE}_FAILED_DETAILS_WITHHELD"
+              exit 1
+            fi
+          done
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo 'PR18_REGRESSION_VERIFIED'
+
+  real-qt:
+    name: PR18 real Qt in clean macOS job
+    needs: verify
+    if: >-
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install real Qt before private checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if python -m pip install --no-input 'pytest==9.1.1' 'PySide6==6.9.2' \
+            > "$RUNNER_TEMP/pr18-qt-install.log" 2>&1
+          then
+            echo 'PR18_QT_DEPENDENCIES_READY'
+          else
+            echo 'PR18_QT_INSTALL_FAILED_DETAILS_WITHHELD'
+            exit 1
+          fi
+          python -c 'from PySide6.QtWidgets import QApplication; print("PR18_REAL_QT_AVAILABLE")'
+      - name: Checkout exact private PR18 commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 21c8196cbef1b5b581419942558d1af0985d0f6a
+          path: source
+          fetch-depth: 2
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+      - name: Verify immutable source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = '21c8196cbef1b5b581419942558d1af0985d0f6a'
+          test -z "$(git -C source status --porcelain)"
+          echo 'PR18_QT_SOURCE_SHA_VERIFIED'
+      - name: Run two real Qt smoke tests without publishing private logs
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+        run: |
+          set -euo pipefail
+          if python -m pytest tests/test_real_qt_smoke_v35.py \
+            -q --tb=no --disable-warnings -p no:cacheprovider \
+            --junitxml="$RUNNER_TEMP/pr18-qt.xml" \
+            > "$RUNNER_TEMP/pr18-qt.log" 2>&1
+          then
+            python - "$RUNNER_TEMP/pr18-qt.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          path = Path(sys.argv[1])
+          assert path.stat().st_size < 1_000_000
+          root = ET.parse(path).getroot()
+          suites = [root] if root.tag == 'testsuite' else root.findall('testsuite')
+          counts = {key: sum(int(s.get(key, '0')) for s in suites)
+                    for key in ('tests', 'failures', 'errors', 'skipped')}
+          assert counts == {'tests': 2, 'failures': 0, 'errors': 0, 'skipped': 0}
+          print('PR18_REAL_QT_TWO_TESTS_PASSED')
+          PY
+          else
+            echo 'PR18_REAL_QT_FAILED_DETAILS_WITHHELD'
+            exit 1
+          fi
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo 'PR18_VERIFICATION_PASSED'
