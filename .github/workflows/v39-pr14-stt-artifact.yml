@@ -1,0 +1,155 @@
+name: V3.9 PR14 isolated STT artifact verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v39-pr14-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: PR14 STT filtering and offline regression
+
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'drfunkss-web/macos-ci-lab' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'drfunkss-web' &&
+      github.triggering_actor == 'drfunkss-web'
+
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      JARVIS_DISABLE_LIVE_NVIDIA: '1'
+      QT_QPA_PLATFORM: offscreen
+      NVIDIA_API_KEY: ''
+      OPENAI_API_KEY: ''
+      ANTHROPIC_API_KEY: ''
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+
+    steps:
+      - name: Configure Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Install fixed dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if python -m pip install --no-input \
+            'pytest==9.1.1' \
+            'openai==2.54.0' \
+            'numpy==1.26.4' \
+            'requests==2.34.2' \
+            'PyYAML==6.0.3' \
+            'opencv-contrib-python==4.11.0.86' \
+            'mediapipe==0.10.21' \
+            'ddgs==9.16.0' \
+            'sounddevice==0.5.6' \
+            'webrtcvad-wheels==2.0.14.post1' \
+            'beautifulsoup4==4.15.0' \
+            'PyAutoGUI==0.9.54' \
+            > "$RUNNER_TEMP/dependencies.log" 2>&1
+          then
+            echo "PR14_DEPENDENCIES_READY"
+          else
+            echo "PR14_DEPENDENCIES_FAILED"
+            exit 1
+          fi
+
+      - name: Checkout exact private PR14 commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ${{ secrets.CI_SOURCE_REPO }}
+          token: ${{ secrets.CI_READ_TOKEN }}
+          ref: 2c5d0a08a69a67823d989ba5c139568470ec0743
+          path: source
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          show-progress: false
+
+      - name: Verify exact PR14 source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C source rev-parse HEAD)" = \
+            "2c5d0a08a69a67823d989ba5c139568470ec0743"
+
+          test -z "$(git -C source status --porcelain)"
+
+          echo "PR14_SOURCE_SHA_VERIFIED"
+
+      - name: Run offline STT filtering tests
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+
+        run: |
+          set -euo pipefail
+
+          export HOME="$RUNNER_TEMP/pr14-test-home"
+          mkdir -p "$HOME"
+
+          if python -m pytest \
+            tests/test_stt_artifact_v39.py \
+            -q --tb=no --disable-warnings \
+            -p no:cacheprovider \
+            > "$RUNNER_TEMP/pr14-security.log" 2>&1
+          then
+            if grep -Eq '(^|[[:space:]])25 passed([[:space:]]|$)' \
+              "$RUNNER_TEMP/pr14-security.log"
+            then
+              echo "PR14_STT_TWENTY_FIVE_TESTS_PASSED"
+            else
+              echo "PR14_STT_TEST_COUNT_FAILED"
+              exit 1
+            fi
+          else
+            echo "PR14_STT_TESTS_FAILED"
+            exit 1
+          fi
+
+      - name: Run complete offline regression
+        working-directory: source
+        shell: bash
+        env:
+          HTTP_PROXY: http://127.0.0.1:9
+          HTTPS_PROXY: http://127.0.0.1:9
+          ALL_PROXY: http://127.0.0.1:9
+          NO_PROXY: ''
+
+        run: |
+          set -euo pipefail
+
+          export HOME="$RUNNER_TEMP/pr14-test-home"
+
+          if python -m pytest tests \
+            -q --tb=no --disable-warnings \
+            -p no:cacheprovider \
+            > "$RUNNER_TEMP/pr14-regression.log" 2>&1
+          then
+            echo "PR14_FULL_REGRESSION_PASSED"
+            echo "PR14_VERIFICATION_PASSED"
+          else
+            echo "PR14_FULL_REGRESSION_FAILED"
+            exit 1
+          fi
+
