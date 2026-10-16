@@ -1,21 +1,23 @@
-name: V3.9 PR13 isolated camera helper verification
+name: V3.9 PR20 current-main camera helper verification
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: v39-pr13-verification
+  group: v39-pr20-camera-helper
   cancel-in-progress: false
 
 jobs:
   verify:
-    name: PR13 camera helper and offline regression
+    name: PR20 camera helper and offline regression
 
     if: >-
-      github.event_name == 'workflow_dispatch' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push') &&
       github.repository == 'drfunkss-web/macos-ci-lab' &&
       github.ref == 'refs/heads/main' &&
       github.actor == 'drfunkss-web' &&
@@ -61,18 +63,18 @@ jobs:
             'PyAutoGUI==0.9.54' \
             > "$RUNNER_TEMP/dependencies.log" 2>&1
           then
-            echo "PR13_DEPENDENCIES_READY"
+            echo "PR20_DEPENDENCIES_READY"
           else
-            echo "PR13_DEPENDENCIES_FAILED"
+            echo "PR20_DEPENDENCIES_FAILED"
             exit 1
           fi
 
-      - name: Checkout exact private PR13 commit
+      - name: Checkout exact private PR20 commit
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ${{ secrets.CI_SOURCE_REPO }}
           token: ${{ secrets.CI_READ_TOKEN }}
-          ref: 0fe08fd3721fdc3ff9139c8f5ad82c13b8063ce7
+          ref: 2de7cdb5b643aeca24ea0e9c84b797a584f8592c
           path: source
           fetch-depth: 1
           fetch-tags: false
@@ -81,17 +83,17 @@ jobs:
           lfs: false
           show-progress: false
 
-      - name: Verify exact PR13 source SHA
+      - name: Verify exact PR20 source SHA
         shell: bash
         run: |
           set -euo pipefail
 
           test "$(git -C source rev-parse HEAD)" = \
-            "0fe08fd3721fdc3ff9139c8f5ad82c13b8063ce7"
+            "2de7cdb5b643aeca24ea0e9c84b797a584f8592c"
 
           test -z "$(git -C source status --porcelain)"
 
-          echo "PR13_SOURCE_SHA_VERIFIED"
+          echo "PR20_SOURCE_SHA_VERIFIED"
 
       - name: Validate Swift helper without camera access
         shell: bash
@@ -99,11 +101,11 @@ jobs:
           set -euo pipefail
 
           if xcrun swiftc -typecheck source/tools/list_cameras.swift \
-            > "$RUNNER_TEMP/pr13-swift-typecheck.log" 2>&1
+            > "$RUNNER_TEMP/pr20-swift-typecheck.log" 2>&1
           then
-            echo "PR13_SWIFT_TYPECHECK_PASSED"
+            echo "PR20_SWIFT_TYPECHECK_PASSED"
           else
-            echo "PR13_SWIFT_TYPECHECK_FAILED"
+            echo "PR20_SWIFT_TYPECHECK_FAILED"
             exit 1
           fi
       - name: Run four offline camera helper tests
@@ -118,25 +120,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          export HOME="$RUNNER_TEMP/pr13-test-home"
+          export HOME="$RUNNER_TEMP/pr20-test-home"
           mkdir -p "$HOME"
 
           if python -m pytest \
             tests/test_camera_helper_v39.py \
             -q --tb=no --disable-warnings \
             -p no:cacheprovider \
-            > "$RUNNER_TEMP/pr13-security.log" 2>&1
+            > "$RUNNER_TEMP/pr20-security.log" 2>&1
           then
             if grep -Eq '(^|[[:space:]])4 passed([[:space:]]|$)' \
-              "$RUNNER_TEMP/pr13-security.log"
+              "$RUNNER_TEMP/pr20-security.log"
             then
-              echo "PR13_CAMERA_FOUR_TESTS_PASSED"
+              echo "PR20_CAMERA_FOUR_TESTS_PASSED"
             else
-              echo "PR13_CAMERA_TEST_COUNT_FAILED"
+              echo "PR20_CAMERA_TEST_COUNT_FAILED"
               exit 1
             fi
           else
-            echo "PR13_CAMERA_TESTS_FAILED"
+            echo "PR20_CAMERA_TESTS_FAILED"
             exit 1
           fi
 
@@ -152,17 +154,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          export HOME="$RUNNER_TEMP/pr13-test-home"
+          export HOME="$RUNNER_TEMP/pr20-test-home"
 
           if python -m pytest tests \
             -q --tb=no --disable-warnings \
             -p no:cacheprovider \
-            > "$RUNNER_TEMP/pr13-regression.log" 2>&1
+            > "$RUNNER_TEMP/pr20-regression.log" 2>&1
           then
-            echo "PR13_FULL_REGRESSION_PASSED"
-            echo "PR13_VERIFICATION_PASSED"
+            echo "PR20_FULL_REGRESSION_PASSED"
+            echo "PR20_VERIFICATION_PASSED"
           else
-            echo "PR13_FULL_REGRESSION_FAILED"
+            echo "PR20_FULL_REGRESSION_FAILED"
             exit 1
           fi
 
